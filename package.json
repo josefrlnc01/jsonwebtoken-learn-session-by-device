@@ -1,0 +1,17 @@
+{
+  "name": "jsonwebtoken",
+  "version": "1.0.0",
+  "description": "",
+  "main": "jwt.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "server": "node --watch jwt.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "cors": "^2.8.6"
+  }
+}
