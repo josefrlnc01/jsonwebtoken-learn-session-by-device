@@ -23,7 +23,7 @@ function auth(req, res, next) {
         req.user = decoded
         next()
     } catch (error) {
-        return res.status(401).json({message : 'No se puedo decodificar el token'})
+        return res.status(403).json({message : 'Token invalido o expirado'})
     }
 }
 
@@ -70,6 +70,10 @@ app.listen(PORT, () => {
     console.log(`app listen on ${PORT}`)
 })
 
+
+app.get('/profile', auth, (req, res) => {
+  res.json({ message: 'Acceso permitido', user: req.user })
+})
 
 
 
