@@ -2,7 +2,7 @@ import cors from 'cors'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 
-
+//json web token
 const PORT = 3000
 const app = express()
 app.use(express.json())
