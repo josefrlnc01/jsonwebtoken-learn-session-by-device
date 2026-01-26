@@ -6,7 +6,7 @@
 
 -cd jsonwebtoken-learn
 
-npm i express, cors, jsonwebtoken
+npm i express, cors, jsonwebtoken, dotenv
 
 npm run server
 
