@@ -4,11 +4,14 @@ import jwt from 'jsonwebtoken'
 import { corsMiddleware } from './middlewares/cors.js'
 import { authToken } from './middlewares/authToken.js'
 import dotenv from 'dotenv'
-import {db} from './db/db.js'
-dotenv.config()
+import { db } from './db/db.js'
+import cookieParser from 'cookie-parser'
+import { hashPassword, verifyPassword } from './utils/passwords.js'
 
+dotenv.config()
 app.use(express.json())
 app.use(corsMiddleware())
+app.use(cookieParser())
 
 
 
@@ -18,43 +21,63 @@ const refresh_key = process.env.SECRET_REFRESH_KEY
 
 
 //Inicio de sesión para obtención del token
-app.post('/login', (req, res) => {
-     const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email)
+app.post('/login', async (req, res) => {
+    const {email, password} = req.body
+    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email)
+    
+    if (!user) {
+        return res.status(401).json({error : 'Usuario no registrado'})
+    }
+
+    //Comprobación de password en form vs password cifrada almacenada
+    const isValidPassword = await verifyPassword(password, user.password)
+ 
+    if (!isValidPassword) {
+        return res.status(401).json({error : 'Password incorrecto'})
+    }
+
     
     //Firma del token con valores introducidos por el usuario + clave secreta
     //Nunca guardamos passwords
-     const refreshToken = jwt.sign({id : user.id}, refresh_key, {
-    expiresIn : '90d'
-   })
+    const refreshToken = jwt.sign({ id: user.id }, refresh_key, {
+        expiresIn: '90d'
+    })
 
     const accessToken = jwt.sign({
-    id : user.id,
-    role : 'user'
-   }, access_key, {
-    expiresIn : '10m'
-   })
+        id: user.id,
+        role: 'user'
+    }, access_key, {
+        expiresIn: '10m'
+    })
+
+    //Adición del refresh token a la bd
+    db.prepare(`
+        UPDATE users
+        SET refresh_token = ?
+        WHERE email = ?
+        `).run(refreshToken, email)
 
 
-   
-   res.cookie('refreshToken', refreshToken, {
-    httpOnly : true,
-    sameSite : 'strict'
-   })
+    //Envío de refrsh token por cookies
+    res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        sameSite: 'strict'
+    })
 
 
     //Devolvemos el token
-    res.json({accessToken})
+    res.json({ accessToken })
 })
 
 
 app.get('/login', authToken, (req, res) => {
-    res.json({message : 'Hello World'})
+    res.json({ message: 'Hello World' })
 })
 
 
 //Usamos el middleware de autenticación en las rutas deseadas
 app.get('/profile', authToken, (req, res) => {
-  res.json({ message: 'Acceso permitido', user: req.user })
+    res.json({ message: 'Acceso permitido', user: req.user })
 })
 
 
@@ -63,43 +86,72 @@ app.listen(PORT, () => console.log(`Listening on ${PORT}`))
 
 
 
-app.post('/register', (req, res) => {
-   const {email} = req.body
+app.post('/register', async (req, res) => {
+    const {name, email, password } = req.body
 
-   const insertUser = db.prepare(`INSERT INTO users(email, refresh_token)
-    VALUES (?, ?)
-    `)
-    insertUser.run(email, refreshToken)
+    const userRegistered = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email)
+    if (userRegistered) {
+        return res.status(401).json({error : 'Usuario ya registrado'})
+    }
 
-     const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email)
+    const hashedPassword = await hashPassword(password)
+    console.log(hashedPassword)
+    db.prepare(`INSERT INTO users(name, email, password)
+    VALUES (?, ?, ?)
+    `).run(name, email, hashedPassword)
+   
 
-   res.json({ user})
+    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email)
+
+    res.json({ user })
 })
 
-
+//Ruta de obtención de nuevo token de acceso
 app.post('/refresh', (req, res) => {
+    //Comprobacion de existencia de refreshToken en cookies
     const refreshToken = req.cookies.refreshToken
     if (!refreshToken) return res.sendStatus(401)
 
-
+    //Comprobación de usuario existente
     const user = db.prepare(`SELECT id, email FROM users
         WHERE refresh_token = (?)
         `).get(refreshToken)
 
 
-        if (!user) return res.sendStatus(403)
+    if (!user) return res.sendStatus(403)
 
 
-            try {
-                const decoded = jwt.verify(refreshToken, refresh_key)
+    try {
+        //Verificación del token de refresco
+        const decoded = jwt.verify(refreshToken, refresh_key)
 
-                const newAccessToken = jwt.sign({id : decoded.id}, access_key, {
-                    expiresIn : '10m'
-                })
-                res.json({accessToken : newAccessToken})
-            } catch(error) {
-                return res.sendStatus(403)
-            }
+        //Creación del nuevo token de acceso
+        const newAccessToken = jwt.sign({ id: decoded.id }, access_key, {
+            expiresIn: '10m'
+        })
+
+        //Creación del nuevo token de refresh
+        const newRefreshToken = jwt.sign({id : decoded.id}, refresh_key, {
+            expiresIn : '90d'
+        })
+
+        //Modificación del refresh en bd
+        db.prepare(`
+            UPDATE users
+            SET refresh_token = ?
+            WHERE refresh_token = ?
+            `).run(newRefreshToken, refreshToken)
+
+        //Envío nuevamente del refresh por cookies
+        res.cookie('refreshToken', newRefreshToken, {
+            httpOnly : true,
+            sameSite : 'strict'
+        })
+
+        res.json({ accessToken: newAccessToken })
+    } catch (error) {
+        return res.sendStatus(403)
+    }
 })
 
 
@@ -107,7 +159,7 @@ app.post('/logout', (req, res) => {
     const refreshToken = req.cookies.refreshToken
     if (refreshToken) {
         const user = req.user
-        db.prepare(`UPDATE USERS SET refresh_token = NULL
+        db.prepare(`UPDATE users SET refresh_token = NULL
             WHERE refresh_token = ?
         `).run(refreshToken)
     }
