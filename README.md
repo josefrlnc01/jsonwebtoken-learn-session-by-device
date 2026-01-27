@@ -4,7 +4,6 @@
 
 -git clone https://github.com/josefrlnc01/jsonwebtoken-learn.git
 
--cd jsonwebtoken-learn
 
 npm i express, cors, jsonwebtoken, dotenv, cookie-parser, better-sqlite3, bcrypt
 

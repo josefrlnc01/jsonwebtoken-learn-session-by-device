@@ -7,6 +7,8 @@ import dotenv from 'dotenv'
 import { db } from './db/db.js'
 import cookieParser from 'cookie-parser'
 import { hashPassword, verifyPassword } from './utils/passwords.js'
+import { hashToken} from './utils/tokens.js'
+
 
 dotenv.config()
 app.use(express.json())
@@ -39,26 +41,31 @@ app.post('/login', async (req, res) => {
     
     //Firma del token con valores introducidos por el usuario + clave secreta
     //Nunca guardamos passwords
-    const refreshToken = jwt.sign({ id: user.id }, refresh_key, {
+    const refreshToken = jwt.sign({ 
+        userId: user.id,
+        sessionId : crypto.randomUUID()
+     }, refresh_key, {
         expiresIn: '90d'
     })
 
     const accessToken = jwt.sign({
-        id: user.id,
-        role: 'user'
+        userId: user.id
     }, access_key, {
         expiresIn: '10m'
     })
 
+    const hashedToken = hashToken(refreshToken)
+
     //Adición del refresh token a la bd
     db.prepare(`
-        UPDATE users
-        SET refresh_token = ?
-        WHERE email = ?
-        `).run(refreshToken, email)
+        INSERT INTO refresh_tokens (user_id, token_hash, device)
+        VALUES (?,?,?)
+        `).run(user.id, 
+            hashedToken,
+        req.headers['user-agent'] || ['unknown'])
 
 
-    //Envío de refrsh token por cookies
+    //Envío de refresh token por cookies
     res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         sameSite: 'strict'
@@ -106,62 +113,88 @@ app.post('/register', async (req, res) => {
     res.json({ user })
 })
 
+
+
 //Ruta de obtención de nuevo token de acceso
-app.post('/refresh', (req, res) => {
-    //Comprobacion de existencia de refreshToken en cookies
-    const refreshToken = req.cookies.refreshToken
-    if (!refreshToken) return res.sendStatus(401)
+app.post('/refresh', async (req, res) => {
+    const token = req.cookies.refreshToken
 
-    //Comprobación de usuario existente
-    const user = db.prepare(`SELECT id, email FROM users
-        WHERE refresh_token = (?)
-        `).get(refreshToken)
+    if (!token) return res.sendStatus(401)
 
-
-    if (!user) return res.sendStatus(403)
-
-
+    //Obtención del payload de refreshToken
+    let payload 
     try {
-        //Verificación del token de refresco
-        const decoded = jwt.verify(refreshToken, refresh_key)
-
-        //Creación del nuevo token de acceso
-        const newAccessToken = jwt.sign({ id: decoded.id }, access_key, {
-            expiresIn: '10m'
-        })
-
-        //Creación del nuevo token de refresh
-        const newRefreshToken = jwt.sign({id : decoded.id}, refresh_key, {
-            expiresIn : '90d'
-        })
-
-        //Modificación del refresh en bd
-        db.prepare(`
-            UPDATE users
-            SET refresh_token = ?
-            WHERE refresh_token = ?
-            `).run(newRefreshToken, refreshToken)
-
-        //Envío nuevamente del refresh por cookies
-        res.cookie('refreshToken', newRefreshToken, {
-            httpOnly : true,
-            sameSite : 'strict'
-        })
-
-        res.json({ accessToken: newAccessToken })
-    } catch (error) {
+        payload = jwt.verify(token, refresh_key)
+    } catch(error) {
         return res.sendStatus(403)
     }
+
+    //Hasheo de token y comprobación de sesión activa 
+    const tokenHash = hashToken(token)
+    const session = db.prepare(`
+        SELECT * FROM refresh_tokens 
+        WHERE token_hash = ?
+        AND revoked = 0
+        `).get(tokenHash)
+
+    if (!session) {
+        db.prepare(`
+        UPDATE refresh_tokens
+        SET revoked = 1
+        WHERE user_id = ?
+            `).run(payload.userId)
+    }
+
+    //Rotación y creación de nuevo refresh token
+    db.prepare(`
+        UPDATE refresh_tokens
+        SET revoked = 1
+        WHERE user_id = ?
+        `).run(session.id)
+
+    const newRefreshToken = jwt.sign({id : payload.userId, sessionId : crypto.randomUUID()}, refresh_key, {
+        expiresIn : '90d'
+    })
+
+    //Adición del nuevo refresh token a la bd
+    db.prepare(`
+        INSERT INTO refresh_tokens(user_id, token_hash, device)
+        VALUES(?,?,?)
+        `).run(
+            payload.id,
+            hashToken(newRefreshToken),
+            session.device
+        )
+
+    const accessToken = jwt.sign({id : payload.userId}, access_key, {
+        expiresIn : '10m'
+    })
+
+    res.cookie('refreshToken', newRefreshToken, {
+        httpOnly : true,
+        sameSite : 'strict'
+    })
+
+    res.json({accessToken})
 })
 
 
 app.post('/logout', (req, res) => {
     const refreshToken = req.cookies.refreshToken
+    
+    let payload 
+
+    try {
+        payload = jwt.verify(refreshToken, refresh_key)
+    } catch (error) {
+        return res.sendStatus(401)
+    }
     if (refreshToken) {
-        const user = req.user
-        db.prepare(`UPDATE users SET refresh_token = NULL
-            WHERE refresh_token = ?
-        `).run(refreshToken)
+        const hashedToken = hashToken(refreshToken)
+        db.prepare(`DELETE FROM refresh_tokens
+            WHERE token_hash = ? 
+            AND user_id = ?
+        `).run(hashedToken, payload.userId)
     }
 
     res.clearCookie('refreshToken')
