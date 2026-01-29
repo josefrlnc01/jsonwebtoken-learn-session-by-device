@@ -1,7 +1,12 @@
+import { access_key } from "../app.js"
+import jwt from 'jsonwebtoken'
+
 export function authToken (req, res, next) {
     const headers = req.headers.authorization
 
     const token = headers && headers.split(' ')[1]
+
+    
 
     if (!token) {
         const error = new Error('No estás autorizado a ver el contenido')
@@ -9,7 +14,7 @@ export function authToken (req, res, next) {
     }
 
     try {
-        const decoded = jwt.verify(token, clave_secreta)
+        const decoded = jwt.verify(token, access_key)
         req.user = decoded
         next()
     } catch (error) {
