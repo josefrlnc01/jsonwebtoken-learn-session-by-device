@@ -181,10 +181,11 @@ app.post('/refresh', async (req, res) => {
 
     //Adición del nuevo refresh token a la bd
     db.prepare(`
-        INSERT INTO refresh_tokens(user_id, token_hash, device)
+        INSERT INTO refresh_tokens(user_id, token_hash, session_uuid, device)
         VALUES(?,?,?)
         `).run(
         payload.userId,
+        payload.sessionId,
         hashToken(newRefreshToken),
         session.device
     )
